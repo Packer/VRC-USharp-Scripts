@@ -1,94 +1,57 @@
-﻿using UdonSharp;
-using Unity.Mathematics;
+﻿
+using UdonSharp;
 using UnityEngine;
-using UnityEngine.UIElements;
 using VRC.SDK3.Components;
 using VRC.SDKBase;
-using VRC.Udon;
 
 [UdonBehaviourSyncMode(BehaviourSyncMode.Manual), RequireComponent(typeof(Rigidbody), typeof(VRCPickup))]
 public class VRCAdvancedPickup : UdonSharpBehaviour
 {
-
     [Header("Networked")]
-    [SerializeField, UdonSynced, FieldChangeCallback(nameof(PlayerId))]
+    [UdonSynced, FieldChangeCallback(nameof(PlayerId))]
     private int playerId = -1;
 
-    [SerializeField, UdonSynced, FieldChangeCallback(nameof(PlayerBone))]
+    [UdonSynced, FieldChangeCallback(nameof(PlayerBone))]
     private int playerBone;
 
-    [SerializeField, UdonSynced, FieldChangeCallback(nameof(OffsetRotation))]
+    [UdonSynced, FieldChangeCallback(nameof(OffsetRotation))]
     private Quaternion offsetRotation;
 
-    [SerializeField, UdonSynced, FieldChangeCallback(nameof(OffsetPosition))]
+    [UdonSynced, FieldChangeCallback(nameof(OffsetPosition))]
     private Vector3 offsetPosition;
 
-    //TODO Same as offset rotation but for Local Position offset for the grips/held as they don't change till you drop/swap hands
+    [Header("Rigidbody Synchronization")]
+    [Tooltip("If true, the rigidbody will sync over the network when the pickup is dropped")]
+    public bool syncRigidbody = true;
 
-    [Range(1, 60), SerializeField, Tooltip("Networked updates a second, higher uses more network speed (Default 30)")]
-    private float syncRate = 30;
+    [Range(1, 60), SerializeField, Tooltip("Rigidbody network updates a second, higher uses more network speed (Default - 1), Only set higher if you need accurate response time")]
+    private float syncRate = 1;
 
-    [SerializeField, FieldChangeCallback(nameof(SyncRigidbody))]
-    private bool syncRigidbody = false;
-    [SerializeField, UdonSynced]
-    private Vector3 rbPosition = Vector3.zero;
-    [SerializeField, UdonSynced]
-    private Vector3 rbRotation = Vector3.zero;
-    [SerializeField, UdonSynced]
-    private Vector3 rbVelocity = Vector3.zero;
-    [SerializeField, UdonSynced]
-    private Vector3 rbAngular = Vector3.zero;
-
-
+    private float syncNextTime = 0; //Time till the next sync
     
-    private VRCPlayerApi playerAPI;
-    private float intialUpdateTime = 0;
+    //Synced Infomation
+    [UdonSynced]
+    private Vector3 syncPosition = Vector3.zero;
+    [UdonSynced]
+    private Vector3 syncRotation = Vector3.zero;
+    [UdonSynced]
+    private Vector3 syncVelocity = Vector3.zero;
+    [UdonSynced]
+    private Vector3 syncAngularVelocity = Vector3.zero;
 
-    private Vector3 gunRotationOffset = new Vector3(0,90,90);
-    private Vector3 gripRotationOffset = new Vector3(0,0,90);
-
-    public Vector3 gunOffset = new Vector3(0.03f, 0.13f, -0.04f);
-    public Vector3 gripOffset = new Vector3(0.03f, 0.13f, -0.04f);
-
-
-    [UdonSynced, HideInInspector]
-    public Vector3 objectPosOffset;
-    [UdonSynced, HideInInspector]
-    public Quaternion objectRotOffset;
-
+    //Last Positions
+    private Vector3 lastPosition = Vector3.zero;
+    private Vector3 lastRotation = Vector3.zero;
+    private Vector3 lastVelocity = Vector3.zero;
+    private Vector3 lastAngularVelocity = Vector3.zero;
 
     // Private
     private Rigidbody rb;
     private VRC_Pickup pickup;
-
+    private VRCPlayerApi playerAPI;
     private bool kinematicDefault = false;
-    private bool gravityDefault = false;
-
-    public bool SyncRigidbody
-    {
-        set
-        {
-            syncRigidbody = value;
-            Debug.Log("SyncRigidbody");
-            if (Networking.IsOwner(gameObject) && value)
-            {
-                rbPosition = rb.position;
-                rbRotation = rb.rotation.eulerAngles;
-                rbVelocity = rb.velocity;
-                rbAngular = rb.angularVelocity;
-                syncRigidbody = false;
-            }
-            else if (!Networking.IsOwner(gameObject) && !value)
-            {
-                rb.position = rbPosition;
-                rb.rotation = Quaternion.Euler(rbRotation);
-                rb.velocity = rbVelocity;
-                rb.angularVelocity = rbAngular;
-            }
-            RequestSerialization();
-        }
-        get => syncRigidbody;
-    }
+    private float setUpdateTime = 3.5f;
+    private float currentUpdateTime = 0;
 
     public Quaternion OffsetRotation
     {
@@ -120,7 +83,6 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
                 Debug.Log("Player Held Reset");
                 //Set Kinematic back to default
                 rb.isKinematic = kinematicDefault;
-                rb.useGravity = gravityDefault;
                 pickup.pickupable = true;
             }
             else if (playerId != Networking.LocalPlayer.playerId && pickup.DisallowTheft)
@@ -139,7 +101,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         set
         {
             playerBone = value;
-            Debug.Log("PlayerBone Changed to: " + value);
+            //Debug.Log("PlayerBone Changed to: " + value);
             RequestSerialization();
         }
         get => playerBone;
@@ -154,36 +116,6 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             rb = GetComponent<Rigidbody>();
 
         kinematicDefault = rb.isKinematic;
-        gravityDefault = rb.useGravity;
-
-        //Saftey Check
-        if (pickup.ExactGrip == transform)
-            pickup.ExactGrip = null;
-
-        if (pickup.ExactGun == transform)
-            pickup.ExactGun = null;
-    }
-
-    private void Update()
-    {
-        /*
-        //TODO can we move this to Field Callback?
-        if (pickup.pickupable)
-        {
-            //If we don't own it and someone else has it
-            if (!Networking.IsOwner(gameObject) && HasPlayer())
-            {
-                pickup.pickupable = false;
-            }
-        }
-        else
-        {
-            if (Networking.IsOwner(gameObject) || !HasPlayer())
-            {
-                pickup.pickupable = true;
-            }
-        }
-        */
     }
 
     //Only happens on OWNER
@@ -195,18 +127,18 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         if (!Networking.IsOwner(gameObject))
             Networking.SetOwner(Networking.LocalPlayer, gameObject);
 
-        Debug.Log("Pickup Pre Values - ID: " + PlayerId + " Bone: " + PlayerBone);
+        //Debug.Log("Pickup Pre Values - ID: " + PlayerId + " Bone: " + PlayerBone);
         PlayerId = Networking.LocalPlayer.playerId;
         PlayerBone = (int)PickupHandToHumanBone(pickup.currentHand);
-        Debug.Log("Pickup POST Values - ID: " + PlayerId + " Bone: " + PlayerBone);
+        //Debug.Log("Pickup POST Values - ID: " + PlayerId + " Bone: " + PlayerBone);
 
         //Local Update Time - Set to 5 sec to compenstate for Delay/Lag/Update 
-        intialUpdateTime = 5f;
+        currentUpdateTime = setUpdateTime;
 
         RequestSerialization();
     }
 
-    private void FixedUpdate()
+    public override void PostLateUpdate()
     {
         //No Network player - Joining/Leaving Game Safety
         if (Networking.LocalPlayer == null)
@@ -221,20 +153,14 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         {
 
             //Update offset rotation for the intial pickup time
-            if (intialUpdateTime > 0)
+            if (currentUpdateTime > 0)
             {
-                intialUpdateTime -= Time.deltaTime;
+                currentUpdateTime -= Time.deltaTime;
 
-                if (pickup.ExactGun != null)
-                {
-                    OffsetRotation = Quaternion.Inverse(GetBoneRotation()) * pickup.ExactGun.rotation;
-                    //OffsetPosition = GetBonePosition() - rb.position;
-                }
-                else if (pickup.ExactGrip != null)
-                {
-                    OffsetRotation = Quaternion.Inverse(GetBoneRotation()) * pickup.ExactGrip.rotation;
-                    //OffsetPosition = pickup.ExactGrip.position - GetBonePosition();
-                }
+                //Generate Offsets to send to clients
+                Quaternion inverse = Quaternion.Inverse(GetBoneRotation());
+                OffsetRotation = inverse * rb.rotation;
+                OffsetPosition = inverse * (rb.position - GetBonePosition());
             }
             return;
         }
@@ -245,76 +171,123 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             //Set to Kinematic on Clients
             if (rb.isKinematic != true)
                 rb.isKinematic = true;
-            //Disable Gravity on Clients
-            if (rb.useGravity != false)
-                rb.useGravity = false;
-
-
 
             //Update Location
-            if (pickup.orientation == VRC_Pickup.PickupOrientation.Gun)
-            {
-                //Gun
-                rb.MoveRotation((GetBoneRotation() * OffsetRotation) * Quaternion.Euler(gunRotationOffset));
-                rb.MovePosition(GetBonePosition() + GetBoneRotation() * gunOffset);
-
-            }
-            else if (pickup.orientation == VRC_Pickup.PickupOrientation.Grip)
-            {
-                //Grip
-                rb.MoveRotation((GetBoneRotation() * OffsetRotation) * Quaternion.Euler(gripRotationOffset));
-                rb.MovePosition(GetBonePosition() + GetBoneRotation() * gripOffset);
-            }                               
-            else
-            {
-                //Default - Tracking
-                rb.MovePosition(GetBonePosition());
-                rb.MoveRotation(OffsetRotation);
-            }
+            rb.MoveRotation(GetBoneRotation() * OffsetRotation);
+            rb.MovePosition((GetBoneRotation() * OffsetPosition) + GetBonePosition());
 
         }
         else if (PlayerId >= 0 && VRCPlayerApi.GetPlayerById(PlayerId) == null)
-            OnDrop();
+            OnDrop();   
     }
 
+    public void FixedUpdate()
+    {
+        //Rigidbody Released Syncing
+        if(syncRigidbody)
+            UpdateRigidbody();
+    }
+
+    void UpdateRigidbody()
+    {
+        //Sync Countdown on Owner
+        if (Networking.IsOwner(gameObject))
+        {
+            if (syncNextTime > 0)
+            {
+                syncNextTime -= Time.fixedDeltaTime;
+                return;
+            }
+        }
+
+        //Ignore Rigidbody
+        if (PlayerId > 0 || rb.IsSleeping())
+        {
+            return;
+        }
+
+        //Update Rigidbody network vars
+        if (Networking.IsOwner(gameObject))
+        {
+            //Next Sync Update
+            syncNextTime = 1 / syncRate;
+
+            //--------------------------------
+            //Owner
+            //--------------------------------
+            //Position
+            if (syncPosition != rb.position)
+                syncPosition = rb.position;
+
+            //Rotation
+            if(syncRotation != rb.rotation.eulerAngles)
+                syncRotation = rb.rotation.eulerAngles;
+
+            //Velocity
+            if(syncVelocity != rb.velocity)
+                syncVelocity = rb.velocity;
+
+            //Angular Velocity
+            if(syncAngularVelocity != rb.angularVelocity)
+                syncAngularVelocity = rb.angularVelocity;
+
+            RequestSerialization();
+        }
+        else
+        {
+            //--------------------------------
+            //Client
+            //--------------------------------
+            //Position
+            if (lastPosition != syncPosition)
+                rb.position = lastPosition = syncPosition;
+
+            //Rotation
+            if (lastRotation != syncRotation)
+            {
+                //TODO large scale test compare CPU to Network traffic
+                rb.rotation = Quaternion.Euler(syncRotation);
+                lastRotation = syncRotation;
+            }
+
+            //Velocity
+            if(lastVelocity != syncVelocity)
+                rb.velocity = lastVelocity = syncVelocity;
+
+            //Angular Velocity
+            if(lastAngularVelocity != syncAngularVelocity)
+                rb.angularVelocity = lastAngularVelocity = syncAngularVelocity;
+        }
+    }
+
+    public void Update()
+    {
+        if (Networking.LocalPlayer != null && PlayerId == Networking.LocalPlayer.playerId)
+        {
+            if (Input.GetKeyDown(KeyCode.I) || Input.GetKeyDown(KeyCode.J) || Input.GetKeyDown(KeyCode.K) || Input.GetKeyDown(KeyCode.L))
+            {
+                currentUpdateTime = setUpdateTime;
+            }
+        }
+    }
 
     //Only Happens on OWNER
     public override void OnDrop()
     {
-        Debug.Log("OnDrop - Owner Only");
+        //Debug.Log("OnDrop - Owner Only");
 
         //Set Kinematic back to default
         rb.isKinematic = kinematicDefault;
-        rb.useGravity = gravityDefault;
 
         //Last Ownership reset
         if (Networking.IsOwner(gameObject))
         {
-            Debug.Log("Drop PRE Values - ID: " + PlayerId + " Bone: " + PlayerBone);
-
             //Default Values
             PlayerId = -1;
             PlayerBone = -1;
             OffsetRotation = Quaternion.identity;
-
-            Debug.Log("Drop POST Values - ID: " + PlayerId + " Bone: " + PlayerBone);
-            //Sync velocity and anglar Velocity TODO reenable later
-            //SyncRigidbody = true;
         }
     }
-
-    /*
-    private void CalculateOffsets(HumanBodyBones bone)
-    {
-        Vector3 objPos = rb.transform.position;
-        Vector3 plyPos = Networking.LocalPlayer.GetBonePosition(bone);
-        Quaternion invRot = Quaternion.Inverse(Networking.LocalPlayer.GetBoneRotation(bone));
-        // q^(-1) * Vector (x2-x1, y2-y1, z2-z1)
-        objectPosOffset = invRot * (objPos - plyPos);
-        // calculate the rotation by multiplying the current rotation with inverse player rotation
-        objectRotOffset = invRot * rb.transform.rotation;
-    }
-    */
 
     int GetHumanBone(HumanBodyBones i)
     {

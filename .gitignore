@@ -58,3 +58,7 @@ sysinfo.txt
 # Crashlytics generated file
 crashlytics-build.properties
 
+#Packer
+Project/Assets/Art/Weapons*
+Project/Assets/Scripts/RotationTest.cs.meta
+Project/Assets/Scripts/RotationTest.cs
