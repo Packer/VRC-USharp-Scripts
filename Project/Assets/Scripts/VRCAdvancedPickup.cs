@@ -183,8 +183,8 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
 
     public void FixedUpdate()
     {
-        //Rigidbody Released Syncing
-        if(syncRigidbody)
+        //Rigidbody Released Syncing TODO add is Kinematic check
+        if(syncRigidbody && !rb.isKinematic)
             UpdateRigidbody();
     }
 
@@ -264,9 +264,10 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     {
         if (Networking.LocalPlayer != null && PlayerId == Networking.LocalPlayer.playerId)
         {
-            if (Input.GetKeyDown(KeyCode.I) || Input.GetKeyDown(KeyCode.J) || Input.GetKeyDown(KeyCode.K) || Input.GetKeyDown(KeyCode.L))
+            if (Input.GetKeyDown(KeyCode.I) || Input.GetKeyDown(KeyCode.J) || Input.GetKeyDown(KeyCode.K) 
+                || Input.GetKeyDown(KeyCode.L) || Input.GetKeyDown(KeyCode.U) || Input.GetKeyDown(KeyCode.O))
             {
-                currentUpdateTime = setUpdateTime;
+                currentUpdateTime = 1;
             }
         }
     }
