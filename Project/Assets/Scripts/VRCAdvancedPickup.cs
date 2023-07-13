@@ -33,7 +33,14 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     [FieldChangeCallback(nameof(SyncDelay))]
     private float syncDelay = 0;                //Time remain until the next sync
     private float syncTick => 1 / syncRate;     //Time between each sync
-    private float syncPickupGrace = 3f;       //Pickup Grace - const (300ms)
+    private float syncPickupGrace = 3f;       //Pickup Grace - const (3000ms)
+
+    //Object Sync Functions
+    [FieldChangeCallback(nameof(GravityState))]
+    private bool gravityState = true;
+
+    [FieldChangeCallback(nameof(KinematicState))]
+    private bool kinematicState = true;
 
     //Synced Rigidbody Infomation
     [UdonSynced]
@@ -57,6 +64,10 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     private VRCPlayerApi playerAPI;
     private bool kinematicDefault = false;
     private bool DebugTest = false;
+
+    //Start Transform
+    private Vector3 startPosition;
+    private Quaternion startRotation;
 
     //--------------------------------
     //  Field Callbacks
@@ -111,7 +122,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             {
                 if(DebugTest) Debug.Log("Player Held Reset");
                 //Set Kinematic back to default
-                rb.isKinematic = kinematicDefault;
+                KinematicState = kinematicDefault;
                 pickup.pickupable = true;
             }
             else if (playerId != Networking.LocalPlayer.playerId && pickup.DisallowTheft)
@@ -136,129 +147,49 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         get => playerBone;
     }
 
+    public bool GravityState
+    {
+        set
+        {
+            gravityState = value;
+            if(rb != null)
+                rb.useGravity = value;
+            RequestSerialization();
+        }
+        get => gravityState;
+    }
+
+    public bool KinematicState
+    {
+        set
+        {
+            kinematicState = value;
+            if(rb != null)
+                rb.isKinematic = value;
+            RequestSerialization();
+        }
+        get => kinematicState;
+    }
 
     //--------------------------------
-    //  Functions
+    //  Update Functions
     //--------------------------------
 
     private void Start()
     {
+        //Respawn Location
+        startPosition = transform.position;
+        startRotation = transform.rotation;
+
         if (!pickup)
             pickup = GetComponent<VRC_Pickup>();
 
         if (!rb)
             rb = GetComponent<Rigidbody>();
 
-        kinematicDefault = rb.isKinematic;
-    }
-
-    //OWNER
-    public override void OnPickup()
-    {
-        if (DebugTest) Debug.Log("OnPickup - Owner Only");
-
-        //New Ownership
-        if (!Networking.IsOwner(gameObject))
-            Networking.SetOwner(Networking.LocalPlayer, gameObject);
-        else
-            SetPlayer();
-    }
-
-    void SetPlayer()
-    {
-        if (DebugTest) Debug.Log("SetPlayer - Owner Only");
-
-        if (!Networking.IsOwner(gameObject))
-            return;
-
-        if (DebugTest) Debug.Log("SetPlayer Pre Values - ID: " + PlayerId + " Bone: " + PlayerBone);
-
-        //Assign Players values
-        PlayerId = Networking.LocalPlayer.playerId;
-        PlayerBone = (int)PickupHandToHumanBone(pickup.currentHand);
-
-        if (DebugTest) Debug.Log("SetPlayer POST Values - ID: " + PlayerId + " Bone: " + PlayerBone);
-
-        //Update Period
-        SyncPeriod = syncPickupGrace;
-
-        //Intial Sync
-        SyncOffsets();
-
-        RequestSerialization();
-    }
-
-    public override bool OnOwnershipRequest(VRCPlayerApi requestingPlayer, VRCPlayerApi requestedOwner)
-    {
-        if (DebugTest) Debug.Log("Ownership Requested by: " + requestingPlayer.playerId + " from: " + requestedOwner.playerId);
-
-        if (pickup.DisallowTheft)
-            return false;
-        else
-        {
-            //Drop Pickup
-            pickup.Drop();
-
-            //Assign New Player
-            PlayerId = requestingPlayer.playerId;
-            SyncPeriod = syncPickupGrace;
-
-            return true;
-        }
-    }
-
-    /*
-    public override void OnOwnershipTransferred(VRCPlayerApi player)
-    {
-        if (DebugTest) Debug.Log("Onwership transfered to: " + player.playerId);    
-
-        //if (Networking.LocalPlayer == player)
-        //    SetPlayer();
-    }
-    */
-
-    //OWNER
-    public override void OnDrop()
-    {
-        if (DebugTest) Debug.Log("OnDrop - Owner Only");
-
-        //Set Kinematic back to default
-        rb.isKinematic = kinematicDefault;
-
-        //Default Values
-        PlayerId = -1;
-        PlayerBone = -1;
-
-        //Initial Rigidbody Sync
-        if (RigidbodyReady())
-            SyncOwnerRigidbody();
-    }
-
-    public override void PostLateUpdate()
-    {
-        //No Network player - Joining/Leaving Game Safety
-        if (Networking.LocalPlayer == null)
-            return;
-
-        //Make sure the correct bone is in use
-        if (HasPlayer() && Networking.IsOwner(gameObject) && PlayerBone != (int)PickupHandToHumanBone(pickup.currentHand))
-            PlayerBone = (int)PickupHandToHumanBone(pickup.currentHand);
-
-        //If Held by Local player
-        if (PlayerId == Networking.LocalPlayer.playerId)
-            return;
-
-        //If pickup is being held and the player is in game
-        if (HasPlayer())
-        {
-            //Set to Kinematic on Clients
-            if (rb.isKinematic != true)
-                rb.isKinematic = true;
-
-            //Update Location
-            rb.MoveRotation(GetBoneRotation() * OffsetRotation);
-            rb.MovePosition((GetBoneRotation() * OffsetPosition) + GetBonePosition());
-        }
+        //Default States
+        KinematicState = kinematicDefault = rb.isKinematic;
+        GravityState = rb.useGravity;
     }
 
     public void FixedUpdate()
@@ -303,6 +234,110 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
                     SyncOffsets();
             }
         }
+    }
+
+    public override void PostLateUpdate()
+    {
+        //No Network player - Joining/Leaving Game Safety
+        if (Networking.LocalPlayer == null)
+            return;
+
+        //Make sure the correct bone is in use
+        if (HasPlayer() && Networking.IsOwner(gameObject) && PlayerBone != (int)PickupHandToHumanBone(pickup.currentHand))
+            PlayerBone = (int)PickupHandToHumanBone(pickup.currentHand);
+
+        //If Held by Local player
+        if (PlayerId == Networking.LocalPlayer.playerId)
+            return;
+
+        //If pickup is being held and the player is in game
+        if (HasPlayer())
+        {
+            //Set to Kinematic on Clients
+            if (rb.isKinematic != true)
+                rb.isKinematic = true;
+
+            //Update Location
+            rb.MoveRotation(GetBoneRotation() * OffsetRotation);
+            rb.MovePosition((GetBoneRotation() * OffsetPosition) + GetBonePosition());
+        }
+    }
+
+    //--------------------------------
+    //  Override Functions
+    //--------------------------------
+
+    public override bool OnOwnershipRequest(VRCPlayerApi requestingPlayer, VRCPlayerApi requestedOwner)
+    {
+        if (DebugTest) Debug.Log("Ownership Requested by: " + requestingPlayer.playerId + " from: " + requestedOwner.playerId);
+
+        if (pickup.DisallowTheft)
+            return false;
+        else
+        {
+            //Drop Pickup
+            pickup.Drop();
+
+            //Assign New Player
+            PlayerId = requestingPlayer.playerId;
+            SyncPeriod = syncPickupGrace;
+
+            return true;
+        }
+    }
+
+    public override void OnPickup()
+    {
+        if (DebugTest) Debug.Log("OnPickup - Owner Only");
+
+        //New Ownership
+        if (!Networking.IsOwner(gameObject))
+            Networking.SetOwner(Networking.LocalPlayer, gameObject);
+        else
+            SetPlayer();
+    }
+    public override void OnDrop()
+    {
+        if (DebugTest) Debug.Log("OnDrop - Owner Only");
+
+        //Set Kinematic back to default
+        KinematicState = kinematicDefault;
+
+        //Default Values
+        PlayerId = -1;
+        PlayerBone = -1;
+
+        //Initial Rigidbody Sync
+        if (RigidbodyReady())
+            SyncOwnerRigidbody();
+    }
+
+    //--------------------------------
+    //  Sync
+    //--------------------------------
+
+    void SetPlayer()
+    {
+        if (DebugTest) Debug.Log("SetPlayer - Owner Only");
+
+        if (!Networking.IsOwner(gameObject))
+            return;
+
+        if (DebugTest) Debug.Log("SetPlayer Pre Values - ID: " + PlayerId + " Bone: " + PlayerBone);
+
+        //Assign Players values
+        PlayerId = Networking.LocalPlayer.playerId;
+        PlayerBone = (int)PickupHandToHumanBone(pickup.currentHand);
+
+        if (DebugTest) Debug.Log("SetPlayer POST Values - ID: " + PlayerId + " Bone: " + PlayerBone);
+
+        //Update Period
+        SyncPeriod = syncPickupGrace;
+
+        //Intial Sync
+        SyncOffsets();
+
+        RequestSerialization();
     }
 
     void SyncOffsets()
@@ -354,28 +389,100 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             //--------------------------------
             //Owner
             //--------------------------------
+            bool ready = false; // Only update if something has updated
+
             //Position
             if (syncPosition != rb.position)
+            {
                 syncPosition = rb.position;
+                ready = true;
+            }
 
-            //Rotation
+                //Rotation
             if (syncRotation != rb.rotation.eulerAngles)
+            {
                 syncRotation = rb.rotation.eulerAngles;
+                ready = true;
+            }
 
             //Velocity
             if (syncVelocity != rb.velocity)
+            {
                 syncVelocity = rb.velocity;
+                ready = true;
+            }
 
             //Angular Velocity
             if (syncAngularVelocity != rb.angularVelocity)
+            {
                 syncAngularVelocity = rb.angularVelocity;
+                ready = true;
+            }
 
-            RequestSerialization();
+            if(ready)
+                RequestSerialization();
         }
     }
 
+    //--------------------------------
+    //  Object Sync Functions
+    //--------------------------------
+
+    public void Respawn()
+    {
+        if (!Networking.IsOwner(gameObject))
+            return;
+
+        rb.MovePosition(startPosition);
+        rb.MoveRotation(startRotation);
+    }
+
+    public void TeleportTo(Transform targetLocation)
+    {
+        TeleportTo(targetLocation.position, targetLocation.rotation);
+    }
+
+    public void TeleportTo(Vector3 targetPosition, Vector3 targetRotation)
+    {
+        TeleportTo(targetPosition, Quaternion.Euler(targetRotation));
+    }
+
+    public void TeleportTo(Vector3 targetPosition, Quaternion targetRotation)
+    {
+        if (!Networking.IsOwner(gameObject))
+            return;
+
+        rb.MovePosition(targetPosition);
+        rb.MoveRotation(targetRotation);
+        SyncOwnerRigidbody();
+    }
+
+    /// <summary>
+    /// Changes the gravity state, usually handled by the Rigidbody of the object but controlled here for sync purposes.
+    /// </summary>
+    /// <param name="value"></param>
+    public void SetGravity(bool value)
+    {
+        if (!Networking.IsOwner(Networking.LocalPlayer, gameObject))
+            return;
+
+        GravityState = rb.useGravity = value;
+    }
+
+    /// <summary>
+    /// Changes the kinematic state, usually handled by the Rigidbody of the object but controlled here for sync purposes. When the kinematic state is on, this Rigidbody ignores forces, collisions and joints.
+    /// </summary>
+    /// <param name="value"></param>
+    public void SetKinematic(bool value)
+    {
+        if (!Networking.IsOwner(Networking.LocalPlayer, gameObject))
+            return;
+
+        KinematicState = value;
+    }
+
     //-------------------------------------------------------------------------
-    // Functionality
+    // Checks
     //-------------------------------------------------------------------------
 
     int HumanBoneToPickupHand(HumanBodyBones bone)
