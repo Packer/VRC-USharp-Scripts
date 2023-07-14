@@ -35,6 +35,12 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     private float syncTick => 1 / syncRate;     //Time between each sync
     private float syncPickupGrace = 3f;       //Pickup Grace - const (3000ms)
 
+    //[Tooltip("Disables the Frozen state when this is picked up")]
+    //public bool unfreezeOnPickup = true;
+
+    [UdonSynced, FieldChangeCallback(nameof(Frozen))]
+    public bool frozen = false;    //Stop doing Update/PostUpdate calculations on this script
+
     //Object Sync Functions
     [FieldChangeCallback(nameof(GravityState))]
     private bool gravityState = true;
@@ -46,7 +52,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     [UdonSynced]
     private Vector3 syncPosition = Vector3.zero;
     [UdonSynced]
-    private Vector3 syncRotation = Vector3.zero;
+    private Quaternion syncRotation = Quaternion.identity;
     [UdonSynced]
     private Vector3 syncVelocity = Vector3.zero;
     [UdonSynced]
@@ -54,7 +60,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
 
     //Last Positions
     private Vector3 lastPosition = Vector3.zero;
-    private Vector3 lastRotation = Vector3.zero;
+    private Quaternion lastRotation = Quaternion.identity;
     private Vector3 lastVelocity = Vector3.zero;
     private Vector3 lastAngularVelocity = Vector3.zero;
 
@@ -72,7 +78,6 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     //--------------------------------
     //  Field Callbacks
     //--------------------------------
-
 
     public float SyncPeriod
     {
@@ -171,6 +176,16 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         get => kinematicState;
     }
 
+    public bool Frozen
+    {
+        set
+        {
+            frozen = value;
+            RequestSerialization();
+        }
+        get => frozen;
+    }
+
     //--------------------------------
     //  Update Functions
     //--------------------------------
@@ -190,10 +205,36 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         //Default States
         KinematicState = kinematicDefault = rb.isKinematic;
         GravityState = rb.useGravity;
+
+        //Intial Position/Rotation Sync
+        if (Networking.IsOwner(gameObject)) //Owner Sync
+        {
+            if (RigidbodyReady()) //Not Held
+                SyncOwnerRigidbody();
+            else //Held
+                SyncOffsets();
+
+            //Freeze after first sync so its up to date
+            Frozen = true;
+        }
+        else //Client Sync
+        {
+            if (RigidbodyReady()) //Not Held
+                UpdateClientRigidbody();
+            else //Held
+            {
+                //Update Location
+                rb.MoveRotation(GetBoneRotation() * OffsetRotation);
+                rb.MovePosition((GetBoneRotation() * OffsetPosition) + GetBonePosition());
+            }
+        }
     }
 
     public void FixedUpdate()
     {
+        if (Frozen)
+            return;
+
         //Input Rotation Check
         if (SyncPeriod <= 0 && Networking.LocalPlayer != null && PlayerId == Networking.LocalPlayer.playerId)
         {
@@ -208,6 +249,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         //Client Rigidbody Update
         if (RigidbodyReady())
         {
+            //Only Clients Update
             UpdateClientRigidbody();
 
             //Rigidbody has moved
@@ -227,10 +269,10 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             {
                 SyncDelay = syncTick;
 
-                //Sync Rigidbody
+                //Not Held - Sync Rigidbody
                 if (RigidbodyReady())
                     SyncOwnerRigidbody();
-                else
+                else //Being Held - Sync Held Offsets
                     SyncOffsets();
             }
         }
@@ -239,7 +281,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     public override void PostLateUpdate()
     {
         //No Network player - Joining/Leaving Game Safety
-        if (Networking.LocalPlayer == null)
+        if (Frozen || Networking.LocalPlayer == null)
             return;
 
         //Make sure the correct bone is in use
@@ -271,11 +313,13 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     {
         if (DebugTest) Debug.Log("Ownership Requested by: " + requestingPlayer.playerId + " from: " + requestedOwner.playerId);
 
+        //Called on the CURRENT owner by the Requestee
+
         if (pickup.DisallowTheft)
             return false;
         else
         {
-            //Drop Pickup
+            //Old Owner Drop Pickup
             pickup.Drop();
 
             //Assign New Player
@@ -296,6 +340,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         else
             SetPlayer();
     }
+
     public override void OnDrop()
     {
         if (DebugTest) Debug.Log("OnDrop - Owner Only");
@@ -322,6 +367,9 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
 
         if (!Networking.IsOwner(gameObject))
             return;
+
+        //Unfreeze the Networking on this object
+        Frozen = false;
 
         if (DebugTest) Debug.Log("SetPlayer Pre Values - ID: " + PlayerId + " Bone: " + PlayerBone);
 
@@ -366,8 +414,8 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             //Rotation
             if (lastRotation != syncRotation)
             {
-                //TODO large scale test and compare CPU to Network traffic on Quaternion conversion
-                rb.rotation = Quaternion.Euler(syncRotation);
+                //Use more Network traffic on Quaternion to save on CPU conversion.
+                rb.rotation = syncRotation;
                 lastRotation = syncRotation;
             }
 
@@ -399,9 +447,9 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             }
 
                 //Rotation
-            if (syncRotation != rb.rotation.eulerAngles)
+            if (syncRotation != rb.rotation)
             {
-                syncRotation = rb.rotation.eulerAngles;
+                syncRotation = rb.rotation;
                 ready = true;
             }
 
@@ -435,6 +483,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
 
         rb.MovePosition(startPosition);
         rb.MoveRotation(startRotation);
+        SyncOwnerRigidbody();
     }
 
     public void TeleportTo(Transform targetLocation)
@@ -451,7 +500,33 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     {
         if (!Networking.IsOwner(gameObject))
             return;
-
+        /*
+        switch (rb.constraints)
+        {
+            case RigidbodyConstraints.FreezePositionX:
+            case RigidbodyConstraints.FreezePositionY:
+            case RigidbodyConstraints.FreezePositionZ:
+            case RigidbodyConstraints.FreezePosition:
+                rb.MoveRotation(targetRotation);
+                break;
+            case RigidbodyConstraints.FreezeRotationX:
+            case RigidbodyConstraints.FreezeRotationY:
+            case RigidbodyConstraints.FreezeRotationZ:
+            case RigidbodyConstraints.FreezeRotation:
+                rb.MovePosition(targetPosition);
+                break;
+            case RigidbodyConstraints.FreezeAll:
+                transform.position = targetPosition;
+                transform.rotation = targetRotation;
+                break;
+            case RigidbodyConstraints.None:
+            default:
+                break;
+        }
+        */
+        //Hack job, it works?
+        transform.position = targetPosition;
+        transform.rotation = targetRotation;
         rb.MovePosition(targetPosition);
         rb.MoveRotation(targetRotation);
         SyncOwnerRigidbody();
@@ -479,6 +554,17 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             return;
 
         KinematicState = value;
+    }
+
+    /// <summary>
+    /// Freezes all Update and PostUpdate networking calculations, methods still work. Use this for performance boosts.
+    /// </summary>
+    /// <param name="value"></param>
+    public void SetFrozen(bool value)
+    {
+        if (!Networking.IsOwner(Networking.LocalPlayer, gameObject))
+            return;
+        Frozen = value;
     }
 
     //-------------------------------------------------------------------------
