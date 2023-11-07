@@ -125,7 +125,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             playerId = value;
             if (!HasPlayer())
             {
-                if(DebugTest) Debug.Log("Player Held Reset");
+                if (DebugTest) Debug.Log("Player Held Reset");
                 //Set Kinematic back to default
                 KinematicState = kinematicDefault;
                 pickup.pickupable = true;
@@ -157,7 +157,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         set
         {
             gravityState = value;
-            if(rb != null)
+            if (rb != null)
                 rb.useGravity = value;
             RequestSerialization();
         }
@@ -169,7 +169,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         set
         {
             kinematicState = value;
-            if(rb != null)
+            if (rb != null)
                 rb.isKinematic = value;
             RequestSerialization();
         }
@@ -180,6 +180,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     {
         set
         {
+            if (DebugTest) Debug.Log("Frozen: " + value);
             frozen = value;
             RequestSerialization();
         }
@@ -215,7 +216,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
                 SyncOffsets();
 
             //Freeze after first sync so its up to date
-            Frozen = true;
+            //SetFrozen(true);
         }
         else //Client Sync
         {
@@ -232,6 +233,8 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
 
     public void FixedUpdate()
     {
+        //if (!Networking.IsOwner(gameObject))
+        //    Debug.Log("Frozen: " + Frozen);
         if (Frozen)
             return;
 
@@ -314,8 +317,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         if (DebugTest) Debug.Log("Ownership Requested by: " + requestingPlayer.playerId + " from: " + requestedOwner.playerId);
 
         //Called on the CURRENT owner by the Requestee
-
-        if (pickup.DisallowTheft)
+        if (pickup.IsHeld && pickup.DisallowTheft)
             return false;
         else
         {
@@ -369,7 +371,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             return;
 
         //Unfreeze the Networking on this object
-        Frozen = false;
+        SetFrozen(false);
 
         if (DebugTest) Debug.Log("SetPlayer Pre Values - ID: " + PlayerId + " Bone: " + PlayerBone);
 
@@ -446,7 +448,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
                 ready = true;
             }
 
-                //Rotation
+            //Rotation
             if (syncRotation != rb.rotation)
             {
                 syncRotation = rb.rotation;
@@ -467,9 +469,32 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
                 ready = true;
             }
 
-            if(ready)
+            if (ready)
                 RequestSerialization();
         }
+    }
+
+    void ForceSync()
+    {
+        if (!Networking.IsOwner(gameObject))
+            return;
+
+
+        if (DebugTest) Debug.Log("Force Sync" + rb.position);
+
+        //Position
+        syncPosition = rb.position;
+
+        //Rotation
+        syncRotation = rb.rotation;
+
+        //Velocity
+        syncVelocity = rb.velocity;
+
+        //Angular Velocity
+        syncAngularVelocity = rb.angularVelocity;
+
+        RequestSerialization();
     }
 
     //--------------------------------
@@ -500,36 +525,33 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     {
         if (!Networking.IsOwner(gameObject))
             return;
-        /*
-        switch (rb.constraints)
-        {
-            case RigidbodyConstraints.FreezePositionX:
-            case RigidbodyConstraints.FreezePositionY:
-            case RigidbodyConstraints.FreezePositionZ:
-            case RigidbodyConstraints.FreezePosition:
-                rb.MoveRotation(targetRotation);
-                break;
-            case RigidbodyConstraints.FreezeRotationX:
-            case RigidbodyConstraints.FreezeRotationY:
-            case RigidbodyConstraints.FreezeRotationZ:
-            case RigidbodyConstraints.FreezeRotation:
-                rb.MovePosition(targetPosition);
-                break;
-            case RigidbodyConstraints.FreezeAll:
-                transform.position = targetPosition;
-                transform.rotation = targetRotation;
-                break;
-            case RigidbodyConstraints.None:
-            default:
-                break;
-        }
-        */
+
+        if (DebugTest) Debug.Log("Telporting to " + targetPosition);
+
+        //Force Drop if held
+        if(pickup.IsHeld)
+            pickup.Drop();
+        
         //Hack job, it works?
         transform.position = targetPosition;
         transform.rotation = targetRotation;
+
+        //Rigidbody
         rb.MovePosition(targetPosition);
         rb.MoveRotation(targetRotation);
-        SyncOwnerRigidbody();
+
+        if (!rb.isKinematic)
+        {
+            rb.velocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
+
+        ForceSync();
+
+        if(Frozen)
+            SetFrozen(false);
+
+        RequestSerialization();
     }
 
     /// <summary>
@@ -618,7 +640,8 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
 
     bool RigidbodyReady()
     {
-        if (syncRigidbody && !rb.isKinematic && !rb.IsSleeping() && PlayerId <= 0)
+        //!isKinematic && !rb.isSleeping
+        if (syncRigidbody && PlayerId <= 0)
             return true;
 
         return false;
