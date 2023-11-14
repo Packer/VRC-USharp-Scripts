@@ -41,6 +41,9 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     [UdonSynced, FieldChangeCallback(nameof(Frozen))]
     public bool frozen = false;    //Stop doing Update/PostUpdate calculations on this script
 
+    [Tooltip("Automatically makes pickup unfrozen when pickup or TeleportTo"), HideInInspector]
+    public bool automaticUnfreeze = true;
+
     //Object Sync Functions
     [FieldChangeCallback(nameof(GravityState))]
     private bool gravityState = true;
@@ -69,6 +72,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     private VRC_Pickup pickup;
     private VRCPlayerApi playerAPI;
     private bool kinematicDefault = false;
+    private bool pickupable = false;
     private bool DebugTest = false;
 
     //Start Transform
@@ -128,7 +132,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
                 if (DebugTest) Debug.Log("Player Held Reset");
                 //Set Kinematic back to default
                 KinematicState = kinematicDefault;
-                pickup.pickupable = true;
+                pickup.pickupable = pickupable;
             }
             else if (playerId != Networking.LocalPlayer.playerId && pickup.DisallowTheft)
             {
@@ -204,29 +208,37 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             rb = GetComponent<Rigidbody>();
 
         //Default States
+        pickupable = pickup.pickupable;
         KinematicState = kinematicDefault = rb.isKinematic;
         GravityState = rb.useGravity;
 
         //Intial Position/Rotation Sync
         if (Networking.IsOwner(gameObject)) //Owner Sync
         {
-            if (RigidbodyReady()) //Not Held
-                SyncOwnerRigidbody();
-            else //Held
+            if (IsHeld())
                 SyncOffsets();
+            else
+                SyncOwnerRigidbody();
 
             //Freeze after first sync so its up to date
             //SetFrozen(true);
         }
         else //Client Sync
         {
-            if (RigidbodyReady()) //Not Held
-                UpdateClientRigidbody();
-            else //Held
+            if (IsHeld()) //Not Held
             {
+                if (DebugTest) 
+					Debug.Log("-----------------------Client: OFFSET SETUP");
+
                 //Update Location
                 rb.MoveRotation(GetBoneRotation() * OffsetRotation);
                 rb.MovePosition((GetBoneRotation() * OffsetPosition) + GetBonePosition());
+            }
+            else //Held
+            {
+                if (DebugTest) 
+					Debug.Log("--------------------Client:  Rigid");
+                UpdateClientRigidbody();
             }
         }
     }
@@ -288,8 +300,17 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             return;
 
         //Make sure the correct bone is in use
-        if (HasPlayer() && Networking.IsOwner(gameObject) && PlayerBone != (int)PickupHandToHumanBone(pickup.currentHand))
-            PlayerBone = (int)PickupHandToHumanBone(pickup.currentHand);
+        if (Networking.IsOwner(gameObject))
+        {
+            if (HasPlayer() && PlayerBone != (int)PickupHandToHumanBone(pickup.currentHand))
+                PlayerBone = (int)PickupHandToHumanBone(pickup.currentHand);
+        }
+        else //Not Owner
+        {
+            //Holding but its not ours
+            if (pickup.IsHeld && pickup.currentPlayer.playerId != PlayerId)
+                pickup.Drop();
+        }
 
         //If Held by Local player
         if (PlayerId == Networking.LocalPlayer.playerId)
@@ -312,9 +333,23 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     //  Override Functions
     //--------------------------------
 
+    public override void OnOwnershipTransferred(VRCPlayerApi player)
+    {
+        SyncPeriod = syncPickupGrace;
+        if (pickup.IsHeld)
+            PlayerId = player.playerId;
+        else
+            PlayerId = -1;
+    }
+
     public override bool OnOwnershipRequest(VRCPlayerApi requestingPlayer, VRCPlayerApi requestedOwner)
     {
-        if (DebugTest) Debug.Log("Ownership Requested by: " + requestingPlayer.playerId + " from: " + requestedOwner.playerId);
+        //Same person
+        if (requestingPlayer.playerId == requestedOwner.playerId)
+            return true;
+
+        if (DebugTest) 
+            Debug.Log("Ownership Requested by: " + requestingPlayer.playerId + " from: " + requestedOwner.playerId);
 
         //Called on the CURRENT owner by the Requestee
         if (pickup.IsHeld && pickup.DisallowTheft)
@@ -323,9 +358,10 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         {
             //Old Owner Drop Pickup
             pickup.Drop();
+            OnDrop();
 
             //Assign New Player
-            PlayerId = requestingPlayer.playerId;
+            PlayerId = -1;
             SyncPeriod = syncPickupGrace;
 
             return true;
@@ -371,7 +407,8 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             return;
 
         //Unfreeze the Networking on this object
-        SetFrozen(false);
+        if(automaticUnfreeze)
+            SetFrozen(false);
 
         if (DebugTest) Debug.Log("SetPlayer Pre Values - ID: " + PlayerId + " Bone: " + PlayerBone);
 
@@ -529,8 +566,11 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         if (DebugTest) Debug.Log("Telporting to " + targetPosition);
 
         //Force Drop if held
-        if(pickup.IsHeld)
+        if (pickup.IsHeld)
+        {
+            OnDrop();
             pickup.Drop();
+        }
         
         //Hack job, it works?
         transform.position = targetPosition;
@@ -548,7 +588,7 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
 
         ForceSync();
 
-        if(Frozen)
+        if(Frozen && automaticUnfreeze)
             SetFrozen(false);
 
         RequestSerialization();
@@ -587,6 +627,15 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
         if (!Networking.IsOwner(Networking.LocalPlayer, gameObject))
             return;
         Frozen = value;
+    }
+
+    /// <summary>
+    /// Sets both Advanced Pickup and Pickup components pickupable state, this becomes the default when assigning to a new player.
+    /// </summary>
+    /// <param name="value"></param>
+    public void SetPickupable(bool value)
+    {
+        pickupable = pickup.pickupable = value;
     }
 
     //-------------------------------------------------------------------------
@@ -638,10 +687,18 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
             return false;
     }
 
+    bool IsHeld()
+    {
+        if (PlayerId > 0 && pickup.IsHeld)
+            return true;
+
+        return false;
+    }
+
     bool RigidbodyReady()
     {
         //!isKinematic && !rb.isSleeping
-        if (syncRigidbody && PlayerId <= 0)
+        if (syncRigidbody && PlayerId <= 0 && !pickup.IsHeld)
             return true;
 
         return false;

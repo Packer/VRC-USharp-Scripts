@@ -1,6 +1,8 @@
 # VRC-USharp-Scripts
 Packer's VR Chat Udon Sharp scripts, for all to use in thier own worlds.
 
+[![alt Donate](https://panels.twitch.tv/panel-144861150-image-4b4979bd-b8e5-4b3c-9aab-28bf6b082007)](https://ko-fi.com/packerb) 
+
 ### How to install Scripts
 **Installation:**
 Right click in the `Project` tab inside of unity, `Import Package > Custom Package...` and select the desired package. Click Import on the bottom right `Import Unity Package` window.
@@ -20,3 +22,7 @@ Download: https://github.com/Packer/VRC-USharp-Scripts/releases
 ### Limitations
 When a player uses a pickup, there is a chance the pickup will be off center from the hand. This occurs when a player is in desktop mode and moves erratically immediately after pickup. This is the tradeoff for network free syncing, it cannot be helped.
 Dropped rigidbodies only properly update if it's moved on the owner's game, this is advanced behaviour outside the scope of this script.
+
+
+### Special Thanks
+[Nisha Wolfe](https://github.com/NishaWolfe/) - Testings and improving functionality 
