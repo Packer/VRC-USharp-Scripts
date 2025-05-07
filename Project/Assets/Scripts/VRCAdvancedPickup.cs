@@ -562,6 +562,8 @@ public class VRCAdvancedPickup : UdonSharpBehaviour
     {
         if (!Networking.IsOwner(gameObject))
             return;
+        if (!rb)
+            rb = GetComponent<Rigidbody>();
 
         if (DebugTest) Debug.Log("Telporting to " + targetPosition);
 
