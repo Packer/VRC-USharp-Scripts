@@ -22,7 +22,3 @@ Download: https://github.com/Packer/VRC-USharp-Scripts/releases
 ### Limitations
 When a player uses a pickup, there is a chance the pickup will be off center from the hand. This occurs when a player is in desktop mode and moves erratically immediately after pickup. This is the tradeoff for network free syncing, it cannot be helped.
 Dropped rigidbodies only properly update if it's moved on the owner's game, this is advanced behaviour outside the scope of this script.
-
-
-### Special Thanks
-[Nisha Wolfe](https://github.com/NishaWolfe/) - Testings and improving functionality 
